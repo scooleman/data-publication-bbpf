@@ -1,5 +1,5 @@
 ---
-title: "Zwin Nature Park (ZNP) Bird Census Counts: Data Processing for DarwinCore mapping"
+title: "Zwin Nature Park (ZNP) Bird Census Counts: Data Processing for Darwin Core mapping"
 author: "Stijn Cooleman"
 date: "`r Sys.Date()`"
 output:
@@ -22,7 +22,7 @@ knitr::opts_chunk$set(
 
 ## Introduction
 
-This R Markdown document contains the data processing pipeline for the [Zwin Nature Park (ZNP) Bird census counts dataset on GBIF](https://www.gbif.org/dataset/dde71542-ad2d-4ec7-a93c-eb18bc0f432b). The pipeline processes raw bird counts and maps essential data according to DarwinCore standards for the occurrences and events, and structures the monitoring metadata in the Humboldt Extension (HE).
+This R Markdown document contains the data processing pipeline for the annual update of the [Zwin Nature Park (ZNP) Bird census counts dataset on GBIF](https://www.gbif.org/dataset/dde71542-ad2d-4ec7-a93c-eb18bc0f432b). The pipeline processes raw bird counts and maps essential data according to Darwin Core standards for the occurrences and events, and structures the monitoring metadata in the Humboldt Extension (HE).
 
 ### Load Libraries
 
@@ -37,23 +37,37 @@ library(readxl)       # To read excel sheets
 
 ## Part 1: Occurrence Extension
 
-This section parses and cleans the bird count observation spreadsheets for 2020: Inner Trail, Transects, and Point counts.
+This section parses and cleans the bird count observation spreadsheets for 2025: Inner Trail, Transects, and Point counts.
 
 ### 1.1 Data from Inner Trail Counts
 
-First, we read the Inner Trail (IT) counts Excel sheet. (Note: empty cells were manually replaced with zeros in Excel for this sheet).
+First, we read the Inner Trail (IT) counts Excel sheet. 
 
 ```{r read-inner-trail}
 ## Read data file
-zp20IT <- readxl::read_xlsx("./2025-02-20/InnerTrail20_over+0_155sp_R.xlsx")
+zp25IT <- readxl::read_xlsx("./2026-06-03/InnerTrail25_over_158sp_R.xlsx")
 ```
 
-Next, we reshape the data from wide to long format using `pivot_longer` (excluding the December-B event since there was no counting in the last half of December 2020).
+```{r view-imported-inner-trail}
+head(zp25IT, 150)
+```
+
+Note: empty cells were not any longer manually replaced with zeros in Excel for this sheet. Here, we programmatically replace `NA` values with `0`.
+
+```{r replace-NA-by-0-inner-trail}
+# Replace NA with 0 programmatically
+zp25IT_0 <- zp25IT %>% 
+  mutate_if(~ any(is.na(.x)), ~ replace(.x, is.na(.x), 0))
+  
+head(zp25IT_0, 150)
+```
+
+Next, we reshape the data from wide to long format using `pivot_longer`.
 
 ```{r pivot-inner-trail}
-occ_zp20IT <- zp20IT %>% 
+occ_zp25IT <- zp25IT_0 %>% 
   pivot_longer(
-    cols = c('ZNP:Birds:2020-01-A:IT':'ZNP:Birds:2020-12-A:IT'),
+    cols = c('ZNP:Birds:2025-01-A:IT':'ZNP:Birds:2025-12-B:IT'),
     names_to = "eventID",
     values_to = "nr_obs",
     values_drop_na = TRUE
@@ -61,29 +75,47 @@ occ_zp20IT <- zp20IT %>%
 ```
 
 We now add standard occurrence attributes based on the observations: 
-* occurrenceStatus: Set as `'present'` if `nr_obs > 0`, otherwise `'absent'`. 
-* occurrenceRemarks: Set as `'flying over'` if `nr_obs == 'over'`. 
+* occurrenceStatus: Set as `'present'` if `nr_obs > 0` or 'text', otherwise `'absent'`. 
+* occurrenceRemarks: Set as `'flying over'` if `nr_obs == 'over'`, and possibly add specific remarks. 
 * individualCount: Set as numeric value, coercing `'over'` and `'x'` to `NA`. 
 
 ```{r process-inner-trail}
 # Add occurrenceStatus
-occ_zp20IT_occstatu <- occ_zp20IT %>% 
-  dplyr::mutate(occurrenceStatus = ifelse(nr_obs > 0, 'present', 'absent'))
+occ_zp25IT_occstatu <- occ_zp25IT %>% 
+  dplyr::mutate(occurrenceStatus = case_when(
+    # 1. If the data is originally not filled in, mark it absent
+    is.na(nr_obs) ~ "absent", 
+    
+    # 2. If it's text like 'over' (fails numeric conversion), mark it present
+    is.na(as.numeric(nr_obs)) ~ "present", 
+    
+    # 3. If it's a valid number greater than 0, mark it present
+    (as.numeric(nr_obs)) > 0 ~ "present", 
+    
+    # 4. Everything else (like 0 or 0.0) falls through to absent
+    TRUE ~ "absent" 
+  ))
 
-# Add occurrenceRemarks
-occ_zp20IT_sr <- occ_zp20IT_occstatu %>% 
-  dplyr::mutate(occurrenceRemarks = ifelse(nr_obs == 'over', 'flying over', NA))
+# Add occurrenceRemarks regarding flying over
+occ_zp25IT_sr <- occ_zp25IT_occstatu %>% 
+  dplyr::mutate(occurrenceRemarks = if_else(nr_obs == 'over', 'flying over', NA))
 
+# Add specific occurrenceRemarks 'ad hoc'
+## Define the condition
+condition <- occ_zp25IT_sr$vernacularName == 'Meerkoet' & occ_zp25IT_sr$eventID == 'ZNP:Birds:2025-06-A:IT'
+## Assign 'incl. juv.' to the matching rows
+occ_zp25IT_sr$occurrenceRemarks[condition] <- 'incl. juv.'
+  
 # Add individualCount and remove temporary nr_obs column
-occ_zp20IT_sri <- occ_zp20IT_sr %>% 
-  dplyr::mutate(individualCount = ifelse(nr_obs %in% c('over','x'), NA, nr_obs))
+occ_zp25IT_sri <- occ_zp25IT_sr %>% 
+  dplyr::mutate(individualCount = if_else(nr_obs %in% c('over','x'), NA, nr_obs))
 
 # Select all except nr_obs
-occ_zp20IT_b <- occ_zp20IT_sri %>% 
+occ_zp25IT_b <- occ_zp25IT_sri %>% 
   select(-nr_obs)
 
 # Convert individualCount to numeric
-occ_zp20IT_fin <- occ_zp20IT_b %>% 
+occ_zp25IT_fin <- occ_zp25IT_b %>% 
   mutate(individualCount = as.numeric(individualCount))
 ```
 
@@ -91,56 +123,56 @@ occ_zp20IT_fin <- occ_zp20IT_b %>%
 
 ### 1.2 Data from Transect Counts
 
-Next, we process the 2020 short transect counts data. Here, we programmatically replace `NA` values with `0`.
+Next, we process the 2025 short transect counts data. Here, we programmatically replace `NA` values with `0`.
 
 ```{r read-and-process-transects}
 # Read short transects data file
-zp20T <- readxl::read_xlsx("./2025-02-20/Transects20_109sp_R.xlsx")
+zp25T <- readxl::read_xlsx("./2026-06-03/Transects25_112sp_R.xlsx")
 
 # Replace NA with 0 programmatically
-occ0_zp20T <- zp20T %>% 
+occ0_zp25T <- zp25T %>% 
   mutate_if(~ any(is.na(.x)), ~ if_else(is.na(.x), 0, .x))
 
 # Reshape transects data to long format
-occ_zp20T <- occ0_zp20T %>% 
+occ_zp25T <- occ0_zp25T %>% 
   pivot_longer(
-    cols = c('ZNP:Birds:2020-01-A:FT':'ZNP:Birds:2020-12-A:DT'),
+    cols = c('ZNP:Birds:2025-01-A:FT':'ZNP:Birds:2025-12-B:DT'),
     names_to = "eventID",
     values_to = "individualCount",
     values_drop_na = TRUE
   )
 
 # Add occurrenceStatus based on individualCount
-occ_zp20T_fin <- occ_zp20T %>% 
-  dplyr::mutate(occurrenceStatus = ifelse(individualCount > 0, 'present', 'absent'))
+occ_zp25T_fin <- occ_zp25T %>% 
+  dplyr::mutate(occurrenceStatus = if_else(as.numeric(individualCount) > 0, 'present', 'absent'))
 ```
 
 ---
 
 ### 1.3 Data from Point Counts
 
-Next, we process the 2020 point counts data.
+Next, we process the 2025 point counts data.
 
 ```{r read-and-process-points}
 # Read point counts data file
-zp20P <- readxl::read_xlsx("./2025-02-20/Points20_108sp_R.xlsx")
+zp25P <- readxl::read_xlsx("./2026-06-03/Points25_108sp_R.xlsx")
 
 # Replace NA with 0 programmatically
-occ0_zp20P <- zp20P %>% 
+occ0_zp25P <- zp25P %>% 
   mutate_if(~ any(is.na(.x)), ~ if_else(is.na(.x), 0, .x))
 
 # Reshape point counts data to long format
-occ_zp20P <- occ0_zp20P %>% 
+occ_zp25P <- occ0_zp25P %>% 
   pivot_longer(
-    cols = c('ZNP:Birds:2020-01-A:FTP':'ZNP:Birds:2020-12-A:DTP'),
+    cols = c('ZNP:Birds:2025-01-A:FTP':'ZNP:Birds:2025-12-B:DTP'),
     names_to = "eventID",
     values_to = "individualCount",
     values_drop_na = TRUE
   )
 
 # Add occurrenceStatus based on individualCount
-occ_zp20P_fin <- occ_zp20P %>% 
-  dplyr::mutate(occurrenceStatus = ifelse(individualCount > 0, 'present', 'absent'))
+occ_zp25P_fin <- occ_zp25P %>% 
+  dplyr::mutate(occurrenceStatus = if_else(as.numeric(individualCount) > 0, 'present', 'absent'))
 ```
 
 ---
@@ -149,27 +181,27 @@ occ_zp20P_fin <- occ_zp20P %>%
 
 We combine the data from all three data frames (Inner Trail, Transects, and Point counts) into one data frame.
 
-```{r combine-2020-occurrences}
+```{r combine-2025-occurrences}
 # Bind the 3 occurrence sheets together, adding an 'id' column to track origin
-occ_zp20 <- bind_rows(
-  occ_zp20IT_fin, 
-  occ_zp20T_fin, 
-  occ_zp20P_fin, 
+occ_zp25 <- bind_rows(
+  occ_zp25IT_fin, 
+  occ_zp25T_fin, 
+  occ_zp25P_fin, 
   .id = "id"
 )
 ```
 
 We now add occurrence IDs, detect taxon rank (subspecies, form, or species), and specify default metadata attributes (kingdom, basis of record, and identifier).
 
-```{r finalize-2020-occurrences}
-occ_zp2020 <- occ_zp20 %>% 
+```{r finalize-2025-occurrences}
+occ_zp2025 <- occ_zp25 %>% 
   # Generate occurrenceID using row numbers
   mutate(internID = row_number()) %>% 
-  mutate(occurrenceID = paste("ZNP:Birds:20:", sprintf("%05d", internID), sep = "")) %>% 
+  mutate(occurrenceID = paste("ZNP:Birds:25:", sprintf("%05d", internID), sep = "")) %>% 
   select(-internID) %>% 
   # Determine taxonRank based on naming conventions
-  mutate(taxonRank = ifelse(str_detect(vernacularName, pattern = "[(]"), "subspecies",
-                            ifelse(str_like(scientificName, "% f. %"),
+  mutate(taxonRank = if_else(str_detect(vernacularName, pattern = "[(]"), "subspecies",
+                            if_else(str_like(scientificName, "% f. %"),
                                    "form",
                                    "species"))) %>% 
   # Default metadata values
@@ -178,6 +210,7 @@ occ_zp2020 <- occ_zp20 %>%
   mutate(identifiedBy = "Wouter Faveyts") %>% 
   mutate(identificationVerificationStatus = "validated") %>% 
   select(-id)
+
 ```
 
 ---
@@ -188,14 +221,14 @@ To facilitate our data integration within the Ocean Biodiversity Information Sys
 
 ```{r add-worms-lsids}
 # Load WoRMS mapping spreadsheet
-zp_worms <- read_xlsx("./znp_vogels_csv_sources_ds_v1.6/Worms_lsid_60sp_znp.xlsx")
+zp_worms <- read_xlsx("./znp_vogels_csv_sources_ds_v1.6/WoRMS_lsid_60sp_znp.xlsx")
 
 # Select only necessary columns from WoRMS mappings
 zp_worms_1 <- zp_worms %>% 
   select(scientificName, LSID)
 
 # Join the WoRMS LSIDs onto our occurrences dataset
-zp_df1 <- occ_zp2020 %>% 
+zp_df1 <- occ_zp2025 %>% 
   left_join(zp_worms_1, by = "scientificName")
 
 # Rename LSID column and set verification status
@@ -207,10 +240,10 @@ zp_occ <- zp_df1 %>%
 
 ```{r occ csv}
 # Write finalized occurrence CSV
-write_csv(zp_occ, "zp_20_occ.csv",na = "")
+write_csv(zp_occ, "zp_25_occ.csv",na = "")
 
-# Display the first 50 rows of the finalized occurrence data
-head(zp_occ, 50)
+# Display the first 350 rows of the finalized occurrence data
+head(zp_occ, 350)
 ```
 
 ---
@@ -221,60 +254,61 @@ This section processes and standardizes counts events, dates, and locations.
 
 ### 2.1 Standardizing Event Time
 
-We load raw 2020 event metadata, split/parse start and end times, and construct DarwinCore compliant ISO 8601 interval strings.
+We load raw 2025 event metadata, split/parse start and end times, and construct Darwin Core (compliant ISO 8601 interval strings).
 
-```{r process-2020-event-times}
-# Read raw 2020 event details
-zp20events_t <- readxl::read_xlsx("./2025-02-20/events_all_R_2020_+Time.xlsx")
+```{r process-2025-event-times}
+# Read raw 2025 event details
+zp25events_t <- readxl::read_xlsx("./2026-06-03/events_all_R_2025_+Time.xlsx")
 
 # 1. Parse Start Hour
 # Separate hours (hh) and minutes (mm) from "Startuur" (e.g. "09u15" or "09U15")
-zp20events_t_s <- zp20events_t %>% 
+zp25events_t_s <- zp25events_t %>% 
   separate_wider_delim(Startuur, regex("u", ignore_case = TRUE), names_sep = "")
 
 # Rename columns
-zp20events_t_s_hm <- zp20events_t_s %>% 
+zp25events_t_s_hm <- zp25events_t_s %>% 
   rename(s_hh = Startuur1, s_mm = Startuur2)
 
 # If minutes are blank, fill with "00"
-zp20events_t_s_hm$s_mm[zp20events_t_s_hm$s_mm == ""] <- "00"
+zp25events_t_s_hm$s_mm[zp25events_t_s_hm$s_mm == ""] <- "00"
 
 # 2. Parse End Hour
-zp20events_t_se <- zp20events_t_s_hm %>% 
+zp25events_t_se <- zp25events_t_s_hm %>% 
   separate_wider_delim(Einduur, regex("u", ignore_case = TRUE), names_sep = "") %>% 
   rename(e_hh = Einduur1, e_mm = Einduur2)
 
 # If minutes are blank, fill with "00"
-zp20events_t_se$e_mm[zp20events_t_se$e_mm == ""] <- "00"
+zp25events_t_se$e_mm[zp25events_t_se$e_mm == ""] <- "00"
 
 # 3. Time Adjustment
 # Convert parts to numeric 
-zp20events_t_se1 <- zp20events_t_se %>% 
+zp25events_t_se1 <- zp25events_t_se %>% 
   mutate(s_mm = as.numeric(s_mm)) %>% 
   mutate(e_mm = as.numeric(e_mm)) %>%   
   mutate(s_hh = as.numeric(s_hh)) %>% 
   mutate(e_hh = as.numeric(e_hh))
 
 # Format hours and minutes back to hh:mm
-zp20events_t_se2 <- zp20events_t_se1 %>% 
+zp25events_t_se2 <- zp25events_t_se1 %>% 
   mutate(starttime = sprintf("%02d:%02d", s_hh, s_mm)) %>% 
   mutate(endtime = sprintf("%02d:%02d", e_hh, e_mm))
 
 # Merge starttime and endtime into one data field
-zp20events_t_se3 <- zp20events_t_se2 %>% mutate(eventTime = paste(starttime,endtime, sep = ""))
+zp25events_t_se3 <- zp25events_t_se2 %>% mutate(eventTime = paste(starttime,endtime, sep = "/"))
+zp25events_t_se3$eventTime[zp25events_t_se3$eventTime == "NA:NA/NA:NA"] <- NA
 
 # 4. Refine columns
-zp20events_t_se4 <- zp20events_t_se3 %>% 
+zp25events_t_se4 <- zp25events_t_se3 %>% 
   select(eventDate, eventID, parentEventID, locationID, eventTime, sampleSizeValue, sampleSizeUnit, HOURS)
 
 # Format date column
-zp20events_date <- zp20events_t_se4 %>% 
+zp25events_date <- zp25events_t_se4 %>% 
   mutate(eventDate = as.Date(eventDate, format = "%Y-%m-%d"))
 
 # Export intermediate CSVs (retaining or dropping HOURS)
-write_csv(zp20events_date, "zp20events_dates&hours.csv")
+write_csv(zp25events_date, "zp25events_dates&hours.csv")
 
-zp20events_dates <- zp20events_date %>% 
+zp25events_dates <- zp25events_date %>% 
   select(-HOURS)
 
 # Intermezzo notes
@@ -298,10 +332,10 @@ We merge spatial details (coordinates, locality name, coordinate uncertainty in 
 
 ```{r join-localities}
 # Load location data, incl. locality reference coordinates (with refined uncertainty radius values)
-zp_loc <- readxl::read_xlsx("./2025-02-20/Localities_events_adj.xlsx")
+zp_loc <- readxl::read_xlsx("./2026-06-03/Localities_events_adj.xlsx")
 
-# Join adjusted localities onto 2020 events
-zp_20_events <- zp20events_dates %>% 
+# Join adjusted localities onto 2025 events
+zp_25_events <- zp25events_dates %>% 
   left_join(zp_loc, by = "locationID")
 ```
 
@@ -310,10 +344,10 @@ zp_20_events <- zp20events_dates %>%
 ```{r eve csv}
 
 # Write finalized events core CSV
-write_csv(zp_20_events, "zp_20_events.csv",na = "")
+write_csv(zp_25_events, "zp_25_events.csv",na = "")
 
-# Display the first 50 rows of the finalized events data
-head(zp_20_events, 50)
+# Display the first 100 rows of the finalized events data
+head(zp_25_events, 100)
 ```
 
 ---
@@ -325,39 +359,39 @@ The Humboldt Extension captures standardized monitoring metadata, such as sampli
 ```{r process-humboldt-extension}
 
 # 1. Select columns of interest for the Humboldt Extension from the events metadata
-zp_20_events_sel <- zp_20_events %>% 
+zp_25_events_sel <- zp_25_events %>% 
   select(eventID, locationID, sampleSizeValue, sampleSizeUnit, samplingProtocol)
 
 # 2. Read parent event IDs reference file
-zp_20_paev_HE_b <- readxl::read_xlsx("./2025-02-20/zp_20_parentEventIDs.xlsx")
+zp_25_paev_HE_b <- readxl::read_xlsx("./2026-06-03/zp_25_parentEventIDs.xlsx")
 
 # Add a fictive locationID indicator ('paev') to mark them as parent events
-zp_20_paev_HE_b$locationID <- 'paev'
+zp_25_paev_HE_b$locationID <- 'paev'
 
 # 3. Combine event levels and parent-event levels
-zp_20_HE_b <- bind_rows(zp_20_events_sel, zp_20_paev_HE_b)
+zp_25_HE_b <- bind_rows(zp_25_events_sel, zp_25_paev_HE_b)
 
 # 4. Read standard details/exceptions details file for HE
-zp_HE_d <- readxl::read_xlsx("./2025-02-20/zp_HE_d.xlsx")
+zp_HE_d <- readxl::read_xlsx("./2026-06-03/zp_HE_d.xlsx")
 
 # 5. Join Humboldt details on locationID
-zp_20_HE_c <- zp_20_HE_b %>% 
+zp_25_HE_c <- zp_25_HE_b %>% 
   left_join(zp_HE_d, by = "locationID")
 
 # 6. Calculate person-hours from minutes (sampleSizeValue) and round to 2 significant digits
-zp_20_HE_f <- zp_20_HE_c %>% 
+zp_25_HE_f <- zp_25_HE_c %>% 
   mutate(samplingEffortValue = signif(sampleSizeValue / 60, digits = 2))
 
 # Note: Alternative formats could be constructed using sprintf:
 # e.g., mutate(samplingEffortValue = sprintf("%01d:%02d", sampleSizeValue / 60))
 
 # 7. Drop unnecessary temporary columns
-zp_20_HE <- zp_20_HE_f %>% 
+zp_25_HE <- zp_25_HE_f %>% 
   select(-c(locationID, sampleSizeValue, sampleSizeUnit, samplingProtocol))
 
 # Write finalized Humboldt Extension CSV
-write_csv(zp_20_HE, "zp_20_HE.csv",na = "")
+write_csv(zp_25_HE, "zp_25_HE.csv",na = "")
 
-# Display the first 50 rows of the finalized HE extension data
-head(zp_20_HE, 50)
+# Display the first 100 rows of the finalized HE extension data
+head(zp_25_HE, 100)
 ```
